@@ -320,7 +320,7 @@ The Java client (`PongClient.java`) is a Swing GUI that:
    Enter server IP or hostname:
    ```
 
-   * Type `localhost` or `35.234.104.73` (your server’s external IP).
+   * Type `localhost` or `12.123.123.12` (your server’s external IP).
 
    ```
    Enter player number (1 or 2):

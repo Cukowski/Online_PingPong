@@ -38,7 +38,10 @@ function connectWebSocket() {
   let port = prompt('Enter WebSocket port (default: 8080):', '8080');
   if (!port) port = '8080';
 
-  const wsUrl = `ws://${host}:${port}`;
+  // Use wss:// if the page is loaded over HTTPS, otherwise ws://
+  const protocol = (window.location.protocol === 'https:') ? 'wss://' : 'ws://';
+  const wsUrl = `${protocol}${host}:${port}`;
+  console.log(`→ Opening WebSocket to ${wsUrl}`);
   ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
