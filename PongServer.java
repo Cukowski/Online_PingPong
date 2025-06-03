@@ -43,36 +43,21 @@ public class PongServer {
             new Thread(player1).start();
             new Thread(player2).start();
 
-            // Main loop: keep restarting matches indefinitely
+            // Main cycle: keep running matches until manual termination
             while (true) {
                 initGame();
-
-                // Broadcast initial “waiting” state until both players press READY
                 waitForReady();
-
-                // Once ready, launch ball toward player 2 by default
                 resetBall(2);
-
-                // Run match until someone wins
                 runMatchLoop();
-
-                // At this point state.winner != 0 ; final state has been broadcast.
                 System.out.println("Match over. Winner: Player " + state.winner);
-
-                // Now wait for both clients to click RESTART (which clears their ready flags)
                 waitForRestart();
-
-                // Loop will re-init and start a fresh match
-                System.out.println("Restarting match...");
+                System.out.println("Preparing next match...");
             }
         } catch (IOException | InterruptedException e) {
             e.printStackTrace();
         }
     }
 
-    /**
-     * Initialize positions, scores, and control flags for a new match.
-     */
     private void initGame() {
         state.paddle1Y = HEIGHT / 2 - PADDLE_HEIGHT / 2;
         state.paddle2Y = HEIGHT / 2 - PADDLE_HEIGHT / 2;
@@ -86,136 +71,96 @@ public class PongServer {
         cmd2.set(new PlayerCommand(0));
     }
 
-    /**
-     * Broadcast "waiting for READY" until both ready1 and ready2 become true.
-     */
     private void waitForReady() throws InterruptedException {
+        // Broadcast "waiting" until both players are ready
         while (!state.ready1 || !state.ready2) {
             broadcastState();
             Thread.sleep(100);
         }
     }
 
-    /**
-     * After a match ends (state.winner != 0), each client’s RESTART clears
-     * that player's ready flag. We wait until both ready1 and ready2 are false
-     * again before starting the next match.
-     */
     private void waitForRestart() throws InterruptedException {
+        // Broadcast final state until both players click RESTART (which clears ready flags)
         while (state.ready1 || state.ready2) {
             Thread.sleep(100);
         }
     }
 
-    /**
-     * Run the core physics loop until someone wins (state.winner != 0).
-     * Broadcasts at ~60 FPS, respecting state.paused.
-     */
     private void runMatchLoop() throws InterruptedException {
         final int FPS = 60;
         final long frameTime = 1000 / FPS;
-
         while (state.winner == 0) {
             long start = System.currentTimeMillis();
-
             if (!state.paused) {
                 updateGame();
             }
             broadcastState();
-
             long elapsed = System.currentTimeMillis() - start;
             long sleep = frameTime - elapsed;
             if (sleep > 0) {
                 Thread.sleep(sleep);
             }
         }
-
-        // Send final state one more time so clients can display end‐of‐game screen
+        // Broadcast final state one last time
         broadcastState();
     }
 
-    /**
-     * Update positions, detect collisions, award points, and set state.winner when reached.
-     */
     private void updateGame() {
-        // Apply paddle movement from last commands
         applyPaddleCommand(cmd1.get(), 1);
         applyPaddleCommand(cmd2.get(), 2);
-
-        // Move ball
         state.ballX += state.ballDX;
         state.ballY += state.ballDY;
-
-        // Bounce off top or bottom
         if (state.ballY <= 0 || state.ballY + BALL_SIZE >= HEIGHT) {
             state.ballDY = -state.ballDY;
         }
-
-        // Left paddle collision / miss
+        // Left side
         if (state.ballX <= PADDLE_WIDTH) {
             if (state.ballY + BALL_SIZE >= state.paddle1Y && state.ballY <= state.paddle1Y + PADDLE_HEIGHT) {
                 bounceOffPaddle(1);
             } else {
                 state.score2++;
-                if (state.score2 >= TARGET_SCORE) {
-                    state.winner = 2;
-                } else {
-                    resetBall(1);
-                }
+                if (state.score2 >= TARGET_SCORE) state.winner = 2;
+                else resetBall(1);
             }
         }
-
-        // Right paddle collision / miss
+        // Right side
         if (state.ballX + BALL_SIZE >= WIDTH - PADDLE_WIDTH) {
             if (state.ballY + BALL_SIZE >= state.paddle2Y && state.ballY <= state.paddle2Y + PADDLE_HEIGHT) {
                 bounceOffPaddle(2);
             } else {
                 state.score1++;
-                if (state.score1 >= TARGET_SCORE) {
-                    state.winner = 1;
-                } else {
-                    resetBall(2);
-                }
+                if (state.score1 >= TARGET_SCORE) state.winner = 1;
+                else resetBall(2);
             }
         }
-
-        // Slowly increase difficulty every 10 total points
-        int totalPoints = state.score1 + state.score2;
-        if (totalPoints > 0 && totalPoints % 10 == 0) {
-            increaseDifficulty();
-        }
+        int total = state.score1 + state.score2;
+        if (total > 0 && total % 10 == 0) increaseDifficulty();
     }
 
     private void applyPaddleCommand(PlayerCommand cmd, int player) {
         int speed = 5;
         if (cmd.direction == -1) {
-            if (player == 1) {
-                state.paddle1Y = Math.max(0, state.paddle1Y - speed);
-            } else {
-                state.paddle2Y = Math.max(0, state.paddle2Y - speed);
-            }
+            if (player == 1) state.paddle1Y = Math.max(0, state.paddle1Y - speed);
+            else state.paddle2Y = Math.max(0, state.paddle2Y - speed);
         } else if (cmd.direction == 1) {
-            if (player == 1) {
-                state.paddle1Y = Math.min(HEIGHT - PADDLE_HEIGHT, state.paddle1Y + speed);
-            } else {
-                state.paddle2Y = Math.min(HEIGHT - PADDLE_HEIGHT, state.paddle2Y + speed);
-            }
+            if (player == 1) state.paddle1Y = Math.min(HEIGHT - PADDLE_HEIGHT, state.paddle1Y + speed);
+            else state.paddle2Y = Math.min(HEIGHT - PADDLE_HEIGHT, state.paddle2Y + speed);
         }
     }
 
     private void bounceOffPaddle(int player) {
         state.ballDX = -state.ballDX;
-        int delta = (int) (Math.random() * 4) - 2; // random tweak -2..1
+        int delta = (int) (Math.random() * 4) - 2;
         state.ballDY += delta;
         if (state.ballDY > 8) state.ballDY = 8;
         if (state.ballDY < -8) state.ballDY = -8;
     }
 
-    private void resetBall(int directionTo) {
+    private void resetBall(int dir) {
         state.ballX = WIDTH / 2 - BALL_SIZE / 2;
         state.ballY = (int) (Math.random() * (HEIGHT - BALL_SIZE));
-        int speedX = 5;
-        state.ballDX = (directionTo == 1) ? -speedX : speedX;
+        int vx = 5;
+        state.ballDX = (dir == 1) ? -vx : vx;
         state.ballDY = (Math.random() < 0.5) ? 3 : -3;
     }
 
@@ -231,9 +176,6 @@ public class PongServer {
         player2.sendState(state);
     }
 
-    /**
-     * Handles a single client's connection: reading PlayerCommand or ControlCommand and updating state.
-     */
     private class ClientHandler implements Runnable {
         private final Socket socket;
         private final int playerNumber;
@@ -258,14 +200,10 @@ public class PongServer {
                     Object obj = in.readObject();
                     if (obj instanceof PlayerCommand) {
                         PlayerCommand cmd = (PlayerCommand) obj;
-                        if (playerNumber == 1) {
-                            cmd1.set(cmd);
-                        } else {
-                            cmd2.set(cmd);
-                        }
+                        if (playerNumber == 1) cmd1.set(cmd);
+                        else cmd2.set(cmd);
                     } else if (obj instanceof ControlCommand) {
-                        ControlCommand cc = (ControlCommand) obj;
-                        handleControl(cc);
+                        handleControl((ControlCommand) obj);
                     }
                 }
             } catch (IOException | ClassNotFoundException e) {
@@ -290,7 +228,6 @@ public class PongServer {
                     System.out.println("Game resumed by player " + playerNumber + ".");
                     break;
                 case RESTART:
-                    // Clearing this player's ready flag; main loop will see both false to restart
                     if (playerNumber == 1) state.ready1 = false;
                     else state.ready2 = false;
                     System.out.println("Player " + playerNumber + " requested restart.");
