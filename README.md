@@ -4,8 +4,7 @@ This repository contains a fully working, cross-platform, multiplayer Pong game.
 
 - **Java TCP clients** (desktop applications)  
 - **WebSocket clients** (browser-based, HTML/CSS/JavaScript)
-- Web Client:
-<a href="https://cukowski.github.io/Online_PingPong/" target="_blank">external link</a>
+- Web Client: [Game Page](https://cukowski.github.io/Online_PingPong/)
 
 Two players (slots 1 and 2) can connect from any combination of desktop and browser. The server handles authentication, “Ready” handshakes, game physics, and broadcasts state to all connected clients. This README walks through **every step** we took to get here—initial design, progressive improvements, detailed implementation notes, and how to compile, run, and test everything.
 
