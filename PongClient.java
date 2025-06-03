@@ -1,14 +1,13 @@
-import java.awt.*;
-import java.awt.event.*;
 import java.io.*;
 import java.net.*;
 import javax.swing.*;
+import java.awt.*;
+import java.awt.event.*;
 
 /**
- * Client that connects to PongServer, sends paddle movement and control commands,
- * and draws game state with READY, PAUSE/RESUME, and RESTART buttons.
- *
- * Now supports specifying both host and port at runtime.
+ * Client that connects to PongServer, performs a passkey handshake,
+ * prompts for player number, and renders the game state with
+ * READY/PAUSE/RESTART controls.
  */
 public class PongClient extends JPanel implements KeyListener {
     // Logical game dimensions (match server's 800x600)
@@ -18,6 +17,8 @@ public class PongClient extends JPanel implements KeyListener {
 
     // Network components
     private Socket socket;
+    private BufferedReader textIn;
+    private BufferedWriter textOut;
     private ObjectOutputStream out;
     private ObjectInputStream in;
 
@@ -43,27 +44,28 @@ public class PongClient extends JPanel implements KeyListener {
             JOptionPane.showMessageDialog(null, "Invalid port. Using 12345.");
             port = 12345;
         }
-        String pNumStr = JOptionPane.showInputDialog("Are you player 1 or 2?", "1");
+
+        // Establish connection and perform secret handshake
+        PongClient client = new PongClient(host, port);
+
+        // Prompt for player number (loop until valid)
         int pNum;
-        try {
-            pNum = Integer.parseInt(pNumStr);
-            if (pNum != 1 && pNum != 2) throw new NumberFormatException();
-        } catch (NumberFormatException e) {
-            JOptionPane.showMessageDialog(null, "Invalid player number. Using 1.");
-            pNum = 1;
+        while (true) {
+            String pNumStr = JOptionPane.showInputDialog("Enter player number (1 or 2):", "1");
+            try {
+                pNum = Integer.parseInt(pNumStr);
+                if (pNum == 1 || pNum == 2) break;
+            } catch (NumberFormatException ignored) { }
+            JOptionPane.showMessageDialog(null, "Invalid player number. Please enter 1 or 2.");
         }
+        client.setPlayerNumber(pNum);
 
+        // Build GUI
         JFrame frame = new JFrame("Networked Pong - Player " + pNum);
-        System.out.println("host:" + host);
-        System.out.println("port:" + port);
-        PongClient client = new PongClient(host, port, pNum);
-
-        // Set initial size to 1600x900 (plus space for buttons)
-        frame.setSize(1600, 900 + 60);
+        frame.setSize(1600, 960);
         frame.setLayout(new BorderLayout());
         frame.add(client, BorderLayout.CENTER);
 
-        // Button panel below the game area
         JPanel buttonPanel = new JPanel();
         JButton readyButton = new JButton("READY");
         JButton pauseButton = new JButton("PAUSE");
@@ -73,15 +75,12 @@ public class PongClient extends JPanel implements KeyListener {
         buttonPanel.add(restartButton);
         frame.add(buttonPanel, BorderLayout.SOUTH);
 
-        // Ready button: send READY once, then disable
         readyButton.addActionListener(e -> {
             client.sendControl(new ControlCommand(ControlCommand.Type.READY));
             readyButton.setEnabled(false);
             client.requestFocusInWindow();
-            client.gameOverMessage = null; // clear end message
+            client.gameOverMessage = null;
         });
-
-        // Pause/Resume toggling
         pauseButton.addActionListener(e -> {
             if (!client.getState().paused && client.getState().winner == 0) {
                 client.sendControl(new ControlCommand(ControlCommand.Type.PAUSE));
@@ -90,8 +89,6 @@ public class PongClient extends JPanel implements KeyListener {
             }
             client.requestFocusInWindow();
         });
-
-        // Restart: send RESTART and re-enable READY
         restartButton.addActionListener(e -> {
             client.sendControl(new ControlCommand(ControlCommand.Type.RESTART));
             readyButton.setEnabled(true);
@@ -103,29 +100,46 @@ public class PongClient extends JPanel implements KeyListener {
         frame.setLocationRelativeTo(null);
         frame.setVisible(true);
 
-        // Ensure client panel has focus for key events
-        client.requestFocusInWindow();
+        // Ensure panel has focus for key events
+        frame.addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowOpened(WindowEvent e) {
+                client.requestFocusInWindow();
+            }
+        });
 
         client.start();
     }
 
-    public PongClient(String host, int port, int playerNum) {
-        this.playerNumber = playerNum;
+    public PongClient(String host, int port) {
         try {
             socket = new Socket(host, port);
+            textIn = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+            textOut = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
+
+            // Wait for server prompt
+            String prompt = textIn.readLine();
+            if ("ENTER_SECRET".equals(prompt)) {
+                String secret = JOptionPane.showInputDialog("Enter shared secret:", "");
+                textOut.write(secret + "\n");
+                textOut.flush();
+            } else {
+                throw new IOException("Unexpected prompt from server: " + prompt);
+            }
+
+            // Wrap object streams after handshake
             out = new ObjectOutputStream(socket.getOutputStream());
             in = new ObjectInputStream(socket.getInputStream());
         } catch (IOException e) {
             e.printStackTrace();
-            JOptionPane.showMessageDialog(null, "Unable to connect to server: " + e.getMessage());
+            JOptionPane.showMessageDialog(null, "Unable to connect or authenticate: " + e.getMessage());
             System.exit(0);
         }
-
         setBackground(Color.BLACK);
         setFocusable(true);
         addKeyListener(this);
 
-        // Listen for GameState updates from server
+        // Thread to listen for GameState updates
         new Thread(() -> {
             try {
                 while (true) {
@@ -144,12 +158,16 @@ public class PongClient extends JPanel implements KeyListener {
             }
         }).start();
 
-        // Repaint loop at ~60 FPS
+        // Repaint timer at ~60 FPS
         new Timer(1000 / 60, e -> repaint()).start();
     }
 
     private void start() {
-        // No additional initialization required
+        // No additional initialization needed
+    }
+
+    public void setPlayerNumber(int pNum) {
+        this.playerNumber = pNum;
     }
 
     @Override
@@ -161,7 +179,7 @@ public class PongClient extends JPanel implements KeyListener {
         int width = getWidth();
         int height = getHeight();
 
-        // Draw waiting screen if not both ready
+        // Waiting screen
         if (!state.ready1 || !state.ready2) {
             g2.setColor(Color.WHITE);
             g2.setFont(new Font("Consolas", Font.BOLD, 36));
@@ -171,7 +189,7 @@ public class PongClient extends JPanel implements KeyListener {
             return;
         }
 
-        // If game over, show final screen with message and continue showing buttons
+        // Game over screen
         if (state.winner != 0) {
             drawFinalFrame(g2, width, height);
             return;
@@ -183,7 +201,6 @@ public class PongClient extends JPanel implements KeyListener {
         g2.setStroke(dashed);
         g2.drawLine(width / 2, 0, width / 2, height);
 
-        // Compute scaling factors based on 800x600
         float xScale = width / (float) GAME_WIDTH;
         float yScale = height / (float) GAME_HEIGHT;
 
@@ -196,7 +213,7 @@ public class PongClient extends JPanel implements KeyListener {
         g2.fillRect(0, paddle1Y, paddleW, paddleH);
         g2.fillRect(width - paddleW, paddle2Y, paddleW, paddleH);
 
-        // Draw ball, if not paused
+        // Draw ball
         int ballX = Math.round(state.ballX * xScale);
         int ballY = Math.round(state.ballY * yScale);
         int ballSize = Math.round(BALL_SIZE * xScale);
@@ -204,7 +221,7 @@ public class PongClient extends JPanel implements KeyListener {
             g2.fillOval(ballX, ballY, ballSize, ballSize);
         }
 
-        // If paused, overlay translucent and text
+        // Paused overlay
         if (state.paused) {
             g2.setColor(new Color(255, 255, 255, 128));
             g2.fillRect(0, 0, width, height);
@@ -216,7 +233,6 @@ public class PongClient extends JPanel implements KeyListener {
             return;
         }
 
-        // Draw ball again if needed
         g2.setColor(Color.WHITE);
         g2.fillOval(ballX, ballY, ballSize, ballSize);
 
@@ -228,15 +244,10 @@ public class PongClient extends JPanel implements KeyListener {
         g2.drawString(s2, width / 2 + 25, 50);
     }
 
-    /**
-     * Draws the final frame when the game is over, with scores and a message.
-     */
     private void drawFinalFrame(Graphics2D g2, int width, int height) {
-        // Gray out the background slightly
         g2.setColor(new Color(0, 0, 0, 100));
         g2.fillRect(0, 0, width, height);
 
-        // Show "You Win" or "You Lose" in center
         g2.setColor(Color.WHITE);
         g2.setFont(new Font("Consolas", Font.BOLD, 72));
         if (gameOverMessage != null) {
@@ -244,7 +255,6 @@ public class PongClient extends JPanel implements KeyListener {
             g2.drawString(gameOverMessage, (width - msgWidth) / 2, height / 2);
         }
 
-        // Draw scores below message
         g2.setFont(new Font("Consolas", Font.BOLD, 48));
         String s1 = "P1: " + state.score1;
         String s2 = "P2: " + state.score2;
@@ -278,9 +288,6 @@ public class PongClient extends JPanel implements KeyListener {
     @Override
     public void keyTyped(KeyEvent e) { }
 
-    /**
-     * Send paddle movement to server
-     */
     public void sendMovement(PlayerCommand cmd) {
         try {
             out.reset();
@@ -291,9 +298,6 @@ public class PongClient extends JPanel implements KeyListener {
         }
     }
 
-    /**
-     * Send control command (READY, PAUSE, RESUME, RESTART) to server
-     */
     public void sendControl(ControlCommand cc) {
         try {
             out.reset();

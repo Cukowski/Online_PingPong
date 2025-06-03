@@ -4,11 +4,24 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Main server that accepts exactly two clients and runs the game loop.
- * Waits for both players to click “READY,” allows pausing/resuming, and supports restart.
+ * Sends a passkey prompt "ENTER_SECRET", reads client response within 5 seconds.
+ * If secret matches environment, proceeds; otherwise rejects and keeps running.
  * Never exits on its own; use Ctrl+C to terminate.
  */
 public class PongServer {
     public static final int PORT = 12345;
+    private static final String SHARED_SECRET;
+    private static final int TIMEOUT_MS = 5000; // 5-second timeout for secret
+
+    static {
+        String secret = System.getenv("PONG_SECRET");
+        if (secret == null || secret.isEmpty()) {
+            System.err.println("Error: PONG_SECRET environment variable not set.");
+            System.exit(1);
+        }
+        SHARED_SECRET = secret;
+    }
+
     private static final int WIDTH = 800, HEIGHT = 600;
     private static final int PADDLE_HEIGHT = 80;
     private static final int PADDLE_WIDTH = 10;
@@ -28,16 +41,16 @@ public class PongServer {
     }
 
     private void start() {
-        System.out.println("Server starting on port " + PORT + "...");
+        System.out.println("Server starting on port " + PORT + "... (secret hidden)");
         try (ServerSocket serverSocket = new ServerSocket(PORT)) {
-            // Accept exactly two clients
-            Socket socket1 = serverSocket.accept();
-            System.out.println("Player 1 connected.");
-            player1 = new ClientHandler(socket1, 1);
-
-            Socket socket2 = serverSocket.accept();
-            System.out.println("Player 2 connected.");
-            player2 = new ClientHandler(socket2, 2);
+            // Continuously accept for player1 until authenticated
+            while (player1 == null) {
+                player1 = tryAcceptAndAuthenticate(serverSocket, 1);
+            }
+            // Continuously accept for player2 until authenticated
+            while (player2 == null) {
+                player2 = tryAcceptAndAuthenticate(serverSocket, 2);
+            }
 
             // Start client handler threads
             new Thread(player1).start();
@@ -58,6 +71,41 @@ public class PongServer {
         }
     }
 
+    /**
+     * Attempts to accept and authenticate a client; returns handler if successful, or null to retry.
+     */
+    private ClientHandler tryAcceptAndAuthenticate(ServerSocket serverSocket, int playerNumber) {
+        try {
+            Socket sock = serverSocket.accept();
+            System.out.println("Incoming connection for player " + playerNumber + "...");
+            // Send prompt
+            BufferedWriter textOut = new BufferedWriter(new OutputStreamWriter(sock.getOutputStream()));
+            BufferedReader textIn = new BufferedReader(new InputStreamReader(sock.getInputStream()));
+            textOut.write("ENTER_SECRET\n");
+            textOut.flush();
+            try {
+                sock.setSoTimeout(TIMEOUT_MS);
+                String received = textIn.readLine();
+                if (!SHARED_SECRET.equals(received)) {
+                    System.out.println("Player " + playerNumber + " failed authentication: " + received);
+                    sock.close();
+                    return null;
+                }
+            } catch (IOException e) {
+                System.out.println("Player " + playerNumber + " authentication timeout or error: " + e.getMessage());
+                sock.close();
+                return null;
+            }
+            // Authentication succeeded
+            System.out.println("Player " + playerNumber + " authenticated.");
+            sock.setSoTimeout(0);
+            return new ClientHandler(sock, playerNumber);
+        } catch (IOException e) {
+            System.out.println("Error accepting player " + playerNumber + ": " + e.getMessage());
+            return null;
+        }
+    }
+
     private void initGame() {
         state.paddle1Y = HEIGHT / 2 - PADDLE_HEIGHT / 2;
         state.paddle2Y = HEIGHT / 2 - PADDLE_HEIGHT / 2;
@@ -72,7 +120,6 @@ public class PongServer {
     }
 
     private void waitForReady() throws InterruptedException {
-        // Broadcast "waiting" until both players are ready
         while (!state.ready1 || !state.ready2) {
             broadcastState();
             Thread.sleep(100);
@@ -80,7 +127,6 @@ public class PongServer {
     }
 
     private void waitForRestart() throws InterruptedException {
-        // Broadcast final state until both players click RESTART (which clears ready flags)
         while (state.ready1 || state.ready2) {
             Thread.sleep(100);
         }
@@ -97,11 +143,8 @@ public class PongServer {
             broadcastState();
             long elapsed = System.currentTimeMillis() - start;
             long sleep = frameTime - elapsed;
-            if (sleep > 0) {
-                Thread.sleep(sleep);
-            }
+            if (sleep > 0) Thread.sleep(sleep);
         }
-        // Broadcast final state one last time
         broadcastState();
     }
 
@@ -113,7 +156,6 @@ public class PongServer {
         if (state.ballY <= 0 || state.ballY + BALL_SIZE >= HEIGHT) {
             state.ballDY = -state.ballDY;
         }
-        // Left side
         if (state.ballX <= PADDLE_WIDTH) {
             if (state.ballY + BALL_SIZE >= state.paddle1Y && state.ballY <= state.paddle1Y + PADDLE_HEIGHT) {
                 bounceOffPaddle(1);
@@ -123,7 +165,6 @@ public class PongServer {
                 else resetBall(1);
             }
         }
-        // Right side
         if (state.ballX + BALL_SIZE >= WIDTH - PADDLE_WIDTH) {
             if (state.ballY + BALL_SIZE >= state.paddle2Y && state.ballY <= state.paddle2Y + PADDLE_HEIGHT) {
                 bounceOffPaddle(2);
@@ -195,6 +236,7 @@ public class PongServer {
         }
 
         public void run() {
+            if (!running) return;
             try {
                 while (running) {
                     Object obj = in.readObject();
@@ -207,7 +249,7 @@ public class PongServer {
                     }
                 }
             } catch (IOException | ClassNotFoundException e) {
-                System.out.println("Player " + playerNumber + " disconnected.");
+                System.out.println("Player " + playerNumber + " disconnected or error: " + e.getMessage());
                 running = false;
             }
         }
@@ -236,12 +278,15 @@ public class PongServer {
         }
 
         public void sendState(GameState gs) {
+            if (!running) return;
             try {
                 out.reset();
                 out.writeObject(gs);
                 out.flush();
             } catch (IOException e) {
-                e.printStackTrace();
+                System.out.println("Error sending state to player " + playerNumber + ": " + e.getMessage());
+                running = false;
+                try { socket.close(); } catch (IOException ex) { }
             }
         }
     }
