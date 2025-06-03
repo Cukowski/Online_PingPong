@@ -1,6 +1,6 @@
-/* File: styles.css */
+/* styles.css */
 
-/* Full‐screen black background */
+/* Always fill the screen */
 html, body {
   margin: 0;
   padding: 0;
@@ -11,7 +11,7 @@ html, body {
   font-family: Arial, sans-serif;
 }
 
-/* Container that centers canvas horizontally & vertically */
+/* Container is full viewport and flex‐centers its contents */
 #gameContainer {
   position: relative;
   width: 100vw;
@@ -21,34 +21,42 @@ html, body {
   justify-content: center;
 }
 
-/* Canvas styling */
+/* Canvas uses 100% of container */
 #gameCanvas {
   background: #111;
   border: 2px solid #444;
-  width: 80vw;
-  height: 60vh;
+  width: 100%;
+  height: 100%;
+  touch-action: none; /* prevent default scrolling when touching canvas */
 }
 
-/* Button bar along the bottom */
+/* Always place controls at bottom and enlarge for touch */
 #controls {
   position: absolute;
-  bottom: 20px;
+  bottom: 10px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
-  gap: 10px;
+  gap: 8px;
 }
 
 button {
-  padding: 10px 20px;
-  font-size: 16px;
+  padding: 12px 24px;
+  font-size: 18px;
   background: #222;
   color: #fff;
   border: 1px solid #555;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
+  user-select: none;
 }
+
 button:disabled {
   background: #555;
   cursor: not-allowed;
+}
+
+/* Hide focus outlines on mobile for cleaner look */
+button:focus {
+  outline: none;
 }

@@ -1,6 +1,6 @@
-// File: script.js
+// script.js
 
-// Constants matching server’s GAME_WIDTH, GAME_HEIGHT, etc.
+// Constants
 const GAME_WIDTH    = 800;
 const GAME_HEIGHT   = 600;
 const PADDLE_WIDTH  = 10;
@@ -12,14 +12,14 @@ let authenticated = false;
 let playerNumber  = null;
 let gameState     = null;
 
-// Grab DOM elements
+// DOM elements
 const canvas      = document.getElementById('gameCanvas');
 const ctx         = canvas.getContext('2d');
 const BTN_READY   = document.getElementById('readyBtn');
 const BTN_PAUSE   = document.getElementById('pauseBtn');
 const BTN_RESTART = document.getElementById('restartBtn');
 
-// Resize canvas whenever window resizes
+// Resize canvas to fill its container
 function resizeCanvas() {
   canvas.width  = canvas.clientWidth;
   canvas.height = canvas.clientHeight;
@@ -27,7 +27,7 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
-// 1) Prompt for server IP/hostname and WebSocket port, then connect
+// 1) Connect WebSocket (unchanged except protocol logic)
 function connectWebSocket() {
   const host = prompt('Enter server hostname or IP:', '');
   if (!host) {
@@ -38,7 +38,6 @@ function connectWebSocket() {
   let port = prompt('Enter WebSocket port (default: 8080):', '8080');
   if (!port) port = '8080';
 
-  // Use wss:// if the page is loaded over HTTPS, otherwise ws://
   const protocol = (window.location.protocol === 'https:') ? 'wss://' : 'ws://';
   const wsUrl = `${protocol}${host}:${port}`;
   console.log(`→ Opening WebSocket to ${wsUrl}`);
@@ -51,11 +50,11 @@ function connectWebSocket() {
   ws.onmessage = (evt) => {
     const msg = evt.data.trim();
 
-    // Phase 1: Authentication handshake
+    // Phase 1: handshake
     if (!authenticated) {
       if (msg === 'ENTER_SECRET') {
         const secret = prompt('Enter shared secret:');
-        ws.send(secret); // no trailing newline
+        ws.send(secret);
       }
       else if (msg === 'OK') {
         authenticated = true;
@@ -68,11 +67,10 @@ function connectWebSocket() {
       return;
     }
 
-    // Phase 2: Already authenticated => treat incoming as JSON "STATE"
+    // Phase 2: receive JSON STATE
     try {
       const obj = JSON.parse(msg);
       if (obj.type === 'STATE') {
-        // Store the full gameState (including ready1/ready2)
         gameState = obj;
       }
     } catch (e) {
@@ -81,7 +79,7 @@ function connectWebSocket() {
   };
 
   ws.onclose = () => {
-    console.log('WebSocket closed; will reconnect in 2s...');
+    console.log('WebSocket closed; reconnecting in 2s...');
     authenticated  = false;
     playerNumber   = null;
     gameState      = null;
@@ -93,22 +91,21 @@ function connectWebSocket() {
   };
 }
 
-// 2) After secret OK, prompt for player number (1 or 2) and send { action:"CHOOSE_PLAYER", p:… }
+// 2) After OK, ask for player slot (unchanged)
 function choosePlayerNumber() {
   while (true) {
     const pNumStr = prompt('Enter player number (1 or 2):', '1');
     const pNum = parseInt(pNumStr, 10);
     if (pNum === 1 || pNum === 2) {
       playerNumber = pNum;
-      // Immediately tell the server which slot we want:
       ws.send(JSON.stringify({ action: 'CHOOSE_PLAYER', p: playerNumber }));
       break;
     }
-    alert('Please enter either 1 or 2.');
+    alert('Please enter 1 or 2.');
   }
 }
 
-// 3) Send a MOVE command over WebSocket: { type:"MOVE", dir:-1/0/1 }
+// 3) Send MOVE command
 function sendMove(dir) {
   if (ws && authenticated && playerNumber) {
     const payload = JSON.stringify({ type: 'MOVE', dir });
@@ -116,7 +113,7 @@ function sendMove(dir) {
   }
 }
 
-// 4) Send a CONTROL command over WebSocket: { type:"CONTROL", action:"READY"/"PAUSE"/"RESUME"/"RESTART" }
+// 4) Send CONTROL command
 function sendControl(action) {
   if (ws && authenticated && playerNumber) {
     const payload = JSON.stringify({ type: 'CONTROL', action });
@@ -124,10 +121,10 @@ function sendControl(action) {
   }
 }
 
-// Hook up the three buttons:
+// Button handlers
 BTN_READY.addEventListener('click', () => {
   sendControl('READY');
-  BTN_READY.disabled = true; // disable until next match
+  BTN_READY.disabled = true;
 });
 BTN_PAUSE.addEventListener('click', () => {
   if (!gameState) return;
@@ -139,10 +136,9 @@ BTN_RESTART.addEventListener('click', () => {
   BTN_READY.disabled = false;
 });
 
-// Keyboard controls for paddle (W/S or Up/Down)
+// 5A) Keyboard controls: W/S or Up/Down (unchanged)
 window.addEventListener('keydown', (e) => {
   if (!authenticated || !gameState) return;
-  // Only allow movement once both players are ready and game is not over
   if (!gameState.ready1 || !gameState.ready2 || gameState.winner !== 0 || gameState.paused) return;
   let dir = 0;
   if (e.key === 'ArrowUp' || e.key.toLowerCase() === 'w') dir = -1;
@@ -155,7 +151,70 @@ window.addEventListener('keyup', (e) => {
   if (relevant.includes(e.key)) sendMove(0);
 });
 
-// 5) Main render loop (~60 FPS)
+// 5B) TOUCH controls for mobile
+let activeTouchId = null;
+
+// When user touches the canvas, track finger position
+canvas.addEventListener('touchstart', (e) => {
+  if (!authenticated || !gameState) return;
+  // Only allow movement once both ready and game not over or paused
+  if (!gameState.ready1 || !gameState.ready2 || gameState.winner !== 0 || gameState.paused) return;
+  e.preventDefault();
+  const touch = e.changedTouches[0];
+  activeTouchId = touch.identifier;
+  handleTouchMove(touch);
+}, { passive: false });
+
+canvas.addEventListener('touchmove', (e) => {
+  if (activeTouchId === null || !authenticated || !gameState) return;
+  // find the touch with our activeTouchId
+  for (let t of e.changedTouches) {
+    if (t.identifier === activeTouchId) {
+      e.preventDefault();
+      handleTouchMove(t);
+      return;
+    }
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', (e) => {
+  if (activeTouchId === null) return;
+  for (let t of e.changedTouches) {
+    if (t.identifier === activeTouchId) {
+      e.preventDefault();
+      activeTouchId = null;
+      sendMove(0);
+      return;
+    }
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchcancel', (e) => {
+  if (activeTouchId === null) return;
+  for (let t of e.changedTouches) {
+    if (t.identifier === activeTouchId) {
+      e.preventDefault();
+      activeTouchId = null;
+      sendMove(0);
+      return;
+    }
+  }
+}, { passive: false });
+
+// Helper: map touch position to dir = -1/0/1
+function handleTouchMove(touch) {
+  const rect = canvas.getBoundingClientRect();
+  const y = touch.clientY - rect.top;      // y position relative to canvas top
+  const mid = rect.height / 2;  
+  let dir = 0;
+  if (y < mid - 20) dir = -1;   // finger in upper half => move up
+  else if (y > mid + 20) dir = 1; // finger in lower half => move down
+  else dir = 0;  
+
+  sendMove(dir);
+}
+
+// 6) Main rendering loop (~60 FPS)
 function gameLoop() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -212,7 +271,7 @@ function gameLoop() {
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // Scale factors (server’s logical size is 800×600)
+  // Scale factors
   const xScale = canvas.width  / GAME_WIDTH;
   const yScale = canvas.height / GAME_HEIGHT;
 
