@@ -8,7 +8,7 @@ import javax.swing.*;
  * Client that connects to PongServer, sends paddle movement and control commands,
  * and draws game state with READY, PAUSE/RESUME, and RESTART buttons.
  *
- * After game over, shows in-game message instead of popup. Users can click RESTART to play again.
+ * Now supports specifying both host and port at runtime.
  */
 public class PongClient extends JPanel implements KeyListener {
     // Logical game dimensions (match server's 800x600)
@@ -34,12 +34,29 @@ public class PongClient extends JPanel implements KeyListener {
     private String gameOverMessage = null;
 
     public static void main(String[] args) {
-        String host = JOptionPane.showInputDialog("Enter server IP:", "localhost");
+        String host = JOptionPane.showInputDialog("Enter server hostname:", "");
+        String portStr = JOptionPane.showInputDialog("Enter server port:", "12345");
+        int port;
+        try {
+            port = Integer.parseInt(portStr);
+        } catch (NumberFormatException e) {
+            JOptionPane.showMessageDialog(null, "Invalid port. Using 12345.");
+            port = 12345;
+        }
         String pNumStr = JOptionPane.showInputDialog("Are you player 1 or 2?", "1");
-        int pNum = Integer.parseInt(pNumStr);
+        int pNum;
+        try {
+            pNum = Integer.parseInt(pNumStr);
+            if (pNum != 1 && pNum != 2) throw new NumberFormatException();
+        } catch (NumberFormatException e) {
+            JOptionPane.showMessageDialog(null, "Invalid player number. Using 1.");
+            pNum = 1;
+        }
 
         JFrame frame = new JFrame("Networked Pong - Player " + pNum);
-        PongClient client = new PongClient(host, 12345, pNum);
+        System.out.println("host:" + host);
+        System.out.println("port:" + port);
+        PongClient client = new PongClient(host, port, pNum);
 
         // Set initial size to 1600x900 (plus space for buttons)
         frame.setSize(1600, 900 + 60);
@@ -100,7 +117,7 @@ public class PongClient extends JPanel implements KeyListener {
             in = new ObjectInputStream(socket.getInputStream());
         } catch (IOException e) {
             e.printStackTrace();
-            JOptionPane.showMessageDialog(null, "Unable to connect to server.");
+            JOptionPane.showMessageDialog(null, "Unable to connect to server: " + e.getMessage());
             System.exit(0);
         }
 
@@ -115,7 +132,6 @@ public class PongClient extends JPanel implements KeyListener {
                     Object obj = in.readObject();
                     if (obj instanceof GameState) {
                         state = (GameState) obj;
-                        // If game just ended, set message
                         if (state.winner != 0 && gameOverMessage == null) {
                             gameOverMessage = (state.winner == playerNumber) ? "You Win" : "You Lose";
                         }
@@ -123,7 +139,7 @@ public class PongClient extends JPanel implements KeyListener {
                     }
                 }
             } catch (IOException | ClassNotFoundException e) {
-                JOptionPane.showMessageDialog(this, "Connection lost.");
+                JOptionPane.showMessageDialog(this, "Connection lost: " + e.getMessage());
                 System.exit(0);
             }
         }).start();
@@ -183,7 +199,7 @@ public class PongClient extends JPanel implements KeyListener {
         // Draw ball, if not paused
         int ballX = Math.round(state.ballX * xScale);
         int ballY = Math.round(state.ballY * yScale);
-        int ballSize = Math.round(BALL_SIZE * xScale); // uniform for xScale
+        int ballSize = Math.round(BALL_SIZE * xScale);
         if (!state.paused) {
             g2.fillOval(ballX, ballY, ballSize, ballSize);
         }
@@ -260,9 +276,7 @@ public class PongClient extends JPanel implements KeyListener {
     }
 
     @Override
-    public void keyTyped(KeyEvent e) {
-        // Not used
-    }
+    public void keyTyped(KeyEvent e) { }
 
     /**
      * Send paddle movement to server
