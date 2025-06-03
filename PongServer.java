@@ -3,23 +3,19 @@ import java.net.*;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.java_websocket.*;
+import org.java_websocket.WebSocket;
 import org.java_websocket.handshake.ClientHandshake;
 import org.java_websocket.server.WebSocketServer;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+
 /**
- * Existing PongServer (TCP-based) + an embedded WebSocket server on port 8080.
- * 
- * 1) The old TCP path (port 12345) still works exactly as before: Java‐Object‐stream clients must
- *    handshake with "ENTER_SECRET" and, if valid, become player1/player2. 
- * 2) The new WebSocket path (port 8080) expects a text‐"ENTER_SECRET" message, then
- *    replies "OK" or "FAIL". Once authenticated, it listens for JSON commands:
- *      { "type":"MOVE", "dir":-1 }          // paddle up/down
- *      { "type":"CONTROL", "action":"READY" } // one of READY, PAUSE, RESUME, RESTART
- *    and forwards them into the same server logic.  It also watches every GameState update and
- *    broadcasts JSON like:
- *      { "type":"STATE", "p1Y":...,"p2Y":...,"ballX":...,"ballY":...,"score1":...,"score2":...,"paused":..., "winner":0 }
- *    to all connected browsers.
+ * PongServer.java
+ *
+ * Allows either two TCP clients (Java) or two WebSocket clients (browser) to play Pong.
+ * Each slot (player 1 or player 2) can be taken by a TCP client or a WebSocket client.
+ * Waits until both slots are occupied, then waits for both to click READY.
  */
 public class PongServer {
     public static final int TCP_PORT = 12345;
@@ -29,27 +25,33 @@ public class PongServer {
     static {
         String s = System.getenv("PONG_SECRET");
         if (s == null || s.isEmpty()) {
-            System.err.println("Error: PONG_SECRET not set in environment");
+            System.err.println("Error: PONG_SECRET environment variable not set.");
             System.exit(1);
         }
         SHARED_SECRET = s;
     }
 
-    // GAME CONSTANTS
-    private static final int WIDTH = 800, HEIGHT = 600;
-    private static final int PADDLE_WIDTH  = 10, PADDLE_HEIGHT = 80;
-    private static final int BALL_SIZE = 15;
-    private static final int TARGET_SCORE = 5;
+    // Game dimensions
+    private static final int WIDTH         = 800;
+    private static final int HEIGHT        = 600;
+    private static final int PADDLE_WIDTH  = 10;
+    private static final int PADDLE_HEIGHT = 80;
+    private static final int BALL_SIZE     = 15;
+    private static final int TARGET_SCORE  = 5;
 
-    // SHARED STATE
+    // Shared game state
     private final GameState state = new GameState();
     private final AtomicReference<PlayerCommand> cmd1 = new AtomicReference<>(new PlayerCommand(0));
     private final AtomicReference<PlayerCommand> cmd2 = new AtomicReference<>(new PlayerCommand(0));
 
-    // TCP client handlers
-    private ClientHandler player1, player2;
+    // TCP client handlers (null if not used)
+    private ClientHandler player1TCP, player2TCP;
 
-    // For broadcasting STATE updates to WebSocket clients
+    // WebSocket slot flags
+    private volatile boolean player1WS = false;
+    private volatile boolean player2WS = false;
+
+    // Set of active WebSocket connections
     private final Set<WebSocket> wsClients = Collections.synchronizedSet(new HashSet<>());
 
     public static void main(String[] args) {
@@ -57,65 +59,93 @@ public class PongServer {
     }
 
     private void start() {
-        System.out.println(">> Starting PongServer (TCP:" + TCP_PORT + ", WS:" + WS_PORT + ")");
+        try {
+            // 1) Launch WebSocket server on port 8080
+            PongWebSocketServer wsServer = new PongWebSocketServer(WS_PORT);
+            wsServer.start();
+            System.out.println(">> WebSocketServer listening on port " + WS_PORT);
 
-        // 1) Start the WebSocket server on port 8080
-        PongWebSocketServer wsServer = new PongWebSocketServer(WS_PORT);
-        wsServer.start();
-        System.out.println(">> WebSocketServer listening on port " + WS_PORT);
+            // 2) Launch TCP server on port 12345
+            try (ServerSocket serverSocket = new ServerSocket(TCP_PORT)) {
+                System.out.println(">> TCP Server listening on port " + TCP_PORT);
+                // Set a short timeout so we can periodically check WS flags
+                serverSocket.setSoTimeout(1000);
 
-        // 2) Start the existing TCP-based game loop
-        try (ServerSocket serverSocket = new ServerSocket(TCP_PORT)) {
-            // Keep trying until two Java clients authenticate:
-            while (player1 == null) player1 = tryAcceptAndAuthenticate(serverSocket, 1);
-            while (player2 == null) player2 = tryAcceptAndAuthenticate(serverSocket, 2);
+                // Wait until slot1 is filled by TCP or WS
+                while (!player1WS && player1TCP == null) {
+                    try {
+                        if (player1TCP == null) {
+                            Socket sock = serverSocket.accept();
+                            // Attempt to authenticate as player 1
+                            ClientHandler handler = authenticateTCP(sock, 1);
+                            if (handler != null) {
+                                player1TCP = handler;
+                                System.out.println("Player 1 will use TCP socket.");
+                            }
+                        }
+                    } catch (SocketTimeoutException ste) {
+                        // Timeout: loop again to check player1WS
+                    }
+                }
 
-            new Thread(player1).start();
-            new Thread(player2).start();
+                // Wait until slot2 is filled by TCP or WS
+                while (!player2WS && player2TCP == null) {
+                    try {
+                        if (player2TCP == null) {
+                            Socket sock = serverSocket.accept();
+                            ClientHandler handler = authenticateTCP(sock, 2);
+                            if (handler != null) {
+                                player2TCP = handler;
+                                System.out.println("Player 2 will use TCP socket.");
+                            }
+                        }
+                    } catch (SocketTimeoutException ste) {
+                        // Timeout: loop again to check player2WS
+                    }
+                }
 
-            // Now run matches forever:
-            while (true) {
-                initGame();
-                waitForReady();
-                resetBall(2);
-                runMatchLoop(wsServer);
-                System.out.println("Match ended. Winner: Player " + state.winner);
-                waitForRestart();
-                System.out.println("Resetting for next match...");
+                // Start TCP handler threads for any TCP players
+                if (player1TCP != null) new Thread(player1TCP).start();
+                if (player2TCP != null) new Thread(player2TCP).start();
+
+                // Both slots occupied now
+                while (true) {
+                    initGame();
+                    waitForReady();
+                    resetBall(2);
+                    runMatchLoop(wsServer);
+                    System.out.println("Match ended. Winner: Player " + state.winner);
+                    waitForRestart();
+                    System.out.println("Preparing next match...");
+                }
             }
         } catch (IOException | InterruptedException e) {
             e.printStackTrace();
         }
     }
 
-    /** 
-     * Try to accept a TCP client (on port 12345), handshake via ENTER_SECRET,
-     * and if OK return a ClientHandler; otherwise close and return null (retry).
+    /**
+     * Attempt to authenticate a TCP socket as playerNumber.  If secret matches, return handler; otherwise close.
      */
-    private ClientHandler tryAcceptAndAuthenticate(ServerSocket serverSocket, int playerNumber) {
+    private ClientHandler authenticateTCP(Socket sock, int playerNumber) {
         try {
-            Socket sock = serverSocket.accept();
-            System.out.println("Incoming TCP connection for P" + playerNumber);
             BufferedWriter textOut = new BufferedWriter(new OutputStreamWriter(sock.getOutputStream()));
             BufferedReader textIn  = new BufferedReader(new InputStreamReader(sock.getInputStream()));
-
-            // 1) Prompt
             textOut.write("ENTER_SECRET\n");
             textOut.flush();
 
-            // 2) Await response (5s timeout)
             sock.setSoTimeout(5000);
-            String resp = textIn.readLine();
-            if (!SHARED_SECRET.equals(resp)) {
-                System.out.println("P" + playerNumber + " wrong secret: " + resp);
+            String received = textIn.readLine();
+            if (!SHARED_SECRET.equals(received)) {
+                System.out.println("TCP Player " + playerNumber + " failed auth: " + received);
                 sock.close();
                 return null;
             }
-            System.out.println("P" + playerNumber + " authenticated (TCP).");
             sock.setSoTimeout(0);
+            System.out.println("TCP Player " + playerNumber + " authenticated.");
             return new ClientHandler(sock, playerNumber);
         } catch (IOException e) {
-            System.out.println("Error accepting P" + playerNumber + ": " + e.getMessage());
+            try { sock.close(); } catch (IOException ex) {}
             return null;
         }
     }
@@ -123,17 +153,19 @@ public class PongServer {
     private void initGame() {
         state.paddle1Y = HEIGHT/2 - PADDLE_HEIGHT/2;
         state.paddle2Y = HEIGHT/2 - PADDLE_HEIGHT/2;
-        state.score1 = state.score2 = 0;
-        state.ready1 = state.ready2 = false;
-        state.paused = false;
-        state.winner = 0;
+        state.score1   = 0;
+        state.score2   = 0;
+        state.ready1   = false;
+        state.ready2   = false;
+        state.paused   = false;
+        state.winner   = 0;
         cmd1.set(new PlayerCommand(0));
         cmd2.set(new PlayerCommand(0));
     }
 
     private void waitForReady() throws InterruptedException {
         while (!state.ready1 || !state.ready2) {
-            broadcastStateToTCP();
+            broadcastStateToAll();
             Thread.sleep(100);
         }
     }
@@ -144,27 +176,16 @@ public class PongServer {
         }
     }
 
-    /**
-     * Main game loop; runs until state.winner != 0. On each tick:
-     *  - apply paddle moves (cmd1/cmd2)
-     *  - move ball, detect collisions, update scores
-     *  - broadcast GameState to both TCP clients and all WS clients
-     */
     private void runMatchLoop(PongWebSocketServer wsServer) throws InterruptedException {
-        final int FPS = 60;
+        final int FPS       = 60;
         final long frameTime = 1000 / FPS;
         while (state.winner == 0) {
             long start = System.currentTimeMillis();
             if (!state.paused) updateGame();
-            broadcastStateToTCP();
-            broadcastStateToWS(wsServer);
-            long elapsed = System.currentTimeMillis() - start;
-            long sleep = frameTime - elapsed;
-            if (sleep > 0) Thread.sleep(sleep);
+            broadcastStateToAll();
+            Thread.sleep(Math.max(0, frameTime - (System.currentTimeMillis() - start)));
         }
-        // Final broadcast
-        broadcastStateToTCP();
-        broadcastStateToWS(wsServer);
+        broadcastStateToAll();
     }
 
     private void updateGame() {
@@ -172,12 +193,9 @@ public class PongServer {
         applyPaddle(cmd2.get(), 2);
         state.ballX += state.ballDX;
         state.ballY += state.ballDY;
-
-        // Bounce off top/bottom
         if (state.ballY <= 0 || state.ballY + BALL_SIZE >= HEIGHT) {
             state.ballDY = -state.ballDY;
         }
-        // Left side
         if (state.ballX <= PADDLE_WIDTH) {
             if (state.ballY + BALL_SIZE >= state.paddle1Y && state.ballY <= state.paddle1Y + PADDLE_HEIGHT) {
                 bounceOffPaddle(1);
@@ -187,7 +205,6 @@ public class PongServer {
                 else resetBall(1);
             }
         }
-        // Right side
         if (state.ballX + BALL_SIZE >= WIDTH - PADDLE_WIDTH) {
             if (state.ballY + BALL_SIZE >= state.paddle2Y && state.ballY <= state.paddle2Y + PADDLE_HEIGHT) {
                 bounceOffPaddle(2);
@@ -197,7 +214,6 @@ public class PongServer {
                 else resetBall(2);
             }
         }
-        // Speed up every 10 total points
         int total = state.score1 + state.score2;
         if (total > 0 && total % 10 == 0) increaseDifficulty();
     }
@@ -206,49 +222,69 @@ public class PongServer {
         int speed = 5;
         if (cmd.direction == -1) {
             if (player == 1) state.paddle1Y = Math.max(0, state.paddle1Y - speed);
-            else            state.paddle2Y = Math.max(0, state.paddle2Y - speed);
+            else             state.paddle2Y = Math.max(0, state.paddle2Y - speed);
         } else if (cmd.direction == 1) {
             if (player == 1) state.paddle1Y = Math.min(HEIGHT - PADDLE_HEIGHT, state.paddle1Y + speed);
-            else            state.paddle2Y = Math.min(HEIGHT - PADDLE_HEIGHT, state.paddle2Y + speed);
+            else             state.paddle2Y = Math.min(HEIGHT - PADDLE_HEIGHT, state.paddle2Y + speed);
         }
     }
 
     private void bounceOffPaddle(int player) {
         state.ballDX = -state.ballDX;
-        int delta = (int)(Math.random()*4) - 2; // tweak Y‐speed
+        int delta = (int)(Math.random() * 4) - 2;
         state.ballDY += delta;
-        if (state.ballDY > 8)  state.ballDY = 8;
-        if (state.ballDY < -8) state.ballDY = -8;
+        state.ballDY = Math.max(-8, Math.min(8, state.ballDY));
     }
 
     private void resetBall(int dir) {
         state.ballX = WIDTH/2 - BALL_SIZE/2;
         state.ballY = (int)(Math.random() * (HEIGHT - BALL_SIZE));
         int vx = 5;
-        state.ballDX = (dir == 1)? -vx : vx;
-        state.ballDY = (Math.random()<0.5)? 3 : -3;
+        state.ballDX = (dir == 1) ? -vx : vx;
+        state.ballDY = (Math.random() < 0.5) ? 3 : -3;
     }
 
     private void increaseDifficulty() {
-        if (state.ballDX>0)  state.ballDX++;
-        else                state.ballDX--;
-        if (state.ballDY>0)  state.ballDY++;
-        else                state.ballDY--;
+        state.ballDX += (state.ballDX > 0 ? 1 : -1);
+        state.ballDY += (state.ballDY > 0 ? 1 : -1);
     }
 
-    /** Send the serialized GameState to both TCP clients. */
-    private void broadcastStateToTCP() {
-        player1.sendState(state);
-        player2.sendState(state);
+    // Broadcast state to both TCP and WebSocket clients
+    private void broadcastStateToAll() {
+        if (player1TCP != null) player1TCP.sendState(state);
+        if (player2TCP != null) player2TCP.sendState(state);
+        // WebSocket broadcast includes only those who chose a slot (attachment is Integer)
+        String json = String.format(
+          "{"
+        +   "\"type\":\"STATE\","                    // message type
+        +   "\"p1Y\":%d,\"p2Y\":%d,"                  // paddle positions
+        +   "\"ballX\":%d,\"ballY\":%d,"              // ball
+        +   "\"score1\":%d,\"score2\":%d,"              // scores
+        +   "\"paused\":%b,\"winner\":%d,"             // paused + winner
+        +   "\"ready1\":%b,\"ready2\":%b"               // ready flags
+        +   "}",
+          state.paddle1Y,
+          state.paddle2Y,
+          state.ballX,
+          state.ballY,
+          state.score1,
+          state.score2,
+          state.paused,
+          state.winner,
+          state.ready1,
+          state.ready2
+        );
+        synchronized (wsClients) {
+            for (WebSocket w : wsClients) {
+                Object attach = w.getAttachment();
+                if (w.isOpen() && attach instanceof Integer) {
+                    w.send(json);
+                }
+            }
+        }
     }
 
-    /** Convert GameState to JSON and send to all WS clients. */
-    private void broadcastStateToWS(PongWebSocketServer wsServer) {
-        wsServer.broadcastGameState(state);
-    }
-
-    // →––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
-    // Inner class: handles exactly two TCP connections (Java clients)
+    // ─── TCP ClientHandler ─────────────────────────────────────────────────────────
     private class ClientHandler implements Runnable {
         private final Socket socket;
         private final int    playerNumber;
@@ -266,38 +302,54 @@ public class PongServer {
                 e.printStackTrace();
             }
         }
+
         public void run() {
-            if (!running) return;
             try {
                 while (running) {
                     Object obj = in.readObject();
                     if (obj instanceof PlayerCommand) {
-                        PlayerCommand cmd = (PlayerCommand)obj;
+                        PlayerCommand cmd = (PlayerCommand) obj;
                         if (playerNumber == 1) cmd1.set(cmd);
                         else                   cmd2.set(cmd);
-                    } else if (obj instanceof ControlCommand) {
-                        handleControl((ControlCommand)obj);
+                    }
+                    else if (obj instanceof ControlCommand) {
+                        ControlCommand cc = (ControlCommand) obj;
+                        handleControlTCP(cc, playerNumber);
                     }
                 }
-            } catch (IOException|ClassNotFoundException e) {
-                System.out.println("P" + playerNumber + " disconnected: "+e.getMessage());
+            } catch (IOException | ClassNotFoundException e) {
+                System.out.println("Player " + playerNumber + " disconnected: " + e.getMessage());
                 running = false;
             }
         }
-        private void handleControl(ControlCommand cc) {
-            switch(cc.type) {
+
+        private void handleControlTCP(ControlCommand cc, int playerNum) {
+            switch (cc.type) {
                 case READY:
-                    if (playerNumber==1) state.ready1 = true; else state.ready2 = true;
+                    if (playerNum == 1) {
+                        state.ready1 = true;
+                        System.out.println("Player 1 is ready.");
+                    } else {
+                        state.ready2 = true;
+                        System.out.println("Player 2 is ready.");
+                    }
                     break;
                 case PAUSE:
-                    state.paused = true; break;
+                    state.paused = true;
+                    System.out.println("Game paused by player " + playerNum + ".");
+                    break;
                 case RESUME:
-                    state.paused = false; break;
+                    state.paused = false;
+                    System.out.println("Game resumed by player " + playerNum + ".");
+                    break;
                 case RESTART:
-                    if (playerNumber==1) state.ready1 = false; else state.ready2 = false;
+                    if (playerNum == 1) state.ready1 = false;
+                    else                 state.ready2 = false;
+                    System.out.println("Player " + playerNum + " requested restart.");
                     break;
             }
         }
+
         public void sendState(GameState gs) {
             if (!running) return;
             try {
@@ -311,111 +363,170 @@ public class PongServer {
         }
     }
 
-
-    // →––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
-    // Inner class: WebSocketServer that proxies JSON ↔ Java
+    // ─── WebSocket Server ──────────────────────────────────────────────────────────
     private class PongWebSocketServer extends WebSocketServer {
         public PongWebSocketServer(int port) {
-            super(new InetSocketAddress(port));
+            super(new InetSocketAddress("0.0.0.0", port));
         }
 
         @Override
         public void onOpen(WebSocket conn, ClientHandshake handshake) {
-            // When a browser connects, immediately send the secret prompt
+            System.out.println("WebSocket: new connection—waiting for secret...");
             conn.send("ENTER_SECRET");
             wsClients.add(conn);
         }
 
         @Override
         public void onClose(WebSocket conn, int code, String reason, boolean remote) {
+            System.out.println("WebSocket: connection closed: " + reason);
+            // If this WS had chosen a slot, clear that slot flag
+            Object attach = conn.getAttachment();
+            if (attach instanceof Integer) {
+                int slot = (Integer) attach;
+                if (slot == 1) player1WS = false;
+                else           player2WS = false;
+            }
             wsClients.remove(conn);
         }
 
         @Override
         public void onMessage(WebSocket conn, String message) {
-            // First message expected = the secret
-            if ("ENTER_SECRET".equals(message) || message.length()==0) {
-                // ignore stray
-                return;
-            }
-            if (!conn.isOpen()) return;
+            message = message.trim();
 
-            // Check if we've already authenticated this connection:
-            if (conn.getAttachment()==null) {
-                // Treat this message as the secret reply from browser
+            // 1) Password handshake
+            if (conn.getAttachment() == null) {
                 if (SHARED_SECRET.equals(message)) {
                     conn.send("OK");
                     conn.setAttachment("authed");
+                    System.out.println("WebSocket client authenticated.");
                 } else {
                     conn.send("FAIL");
+                    System.out.println("WebSocket client failed auth: " + message);
                     conn.close();
                 }
                 return;
             }
 
-            // If we get here, it means browser is authenticated; interpret JSON command
-            try {
-                // Simple JSON parsing (naive): expecting {"type":"MOVE","dir":-1} or {"type":"CONTROL","action":"READY"}
-                if (message.startsWith("{") && message.contains("\"type\":\"MOVE\"")) {
-                    // Extract dir
-                    int dir = 0;
-                    if (message.contains("\"dir\":-1")) dir = -1;
-                    if (message.contains("\"dir\":1"))  dir = 1;
-                    // Decide which player to forward to:
-                    PlayerCommand pc = new PlayerCommand(dir);
-                    // If they hadn’t picked “playerNumber” yet, ignore.  Otherwise:
-                    Object att = conn.getAttachment(); 
-                    // We stored “authed” in attachment, but we also need to store the playerNumber…
-                    // For simplicity, assume first authenticated WS=player1, next=player2:
-                    // In a production setting, you’d maintain a map WebSocket→playerNumber.
-                    // Here, just broadcast to both as if they were input sources:
-                    cmd1.set(pc);
-                    cmd2.set(pc);
-                }
-                else if (message.startsWith("{") && message.contains("\"type\":\"CONTROL\"")) {
-                    // Extract action: READY, PAUSE, RESUME, RESTART
-                    if (message.contains("\"action\":\"READY\"")) {
-                        ControlCommand cc = new ControlCommand(ControlCommand.Type.READY);
-                        cmd1.get(); // nothing else
-                    }
-                    else if (message.contains("\"action\":\"PAUSE\"")) {
-                        ControlCommand cc = new ControlCommand(ControlCommand.Type.PAUSE);
-                        // broadcast to both players
-                        // (or decide by routing logic)
-                        state.paused = true;
-                    }
-                    else if (message.contains("\"action\":\"RESUME\"")) {
-                        ControlCommand cc = new ControlCommand(ControlCommand.Type.RESUME);
-                        state.paused = false;
-                    }
-                    else if (message.contains("\"action\":\"RESTART\"")) {
-                        ControlCommand cc = new ControlCommand(ControlCommand.Type.RESTART);
-                        state.ready1 = false;
-                        state.ready2 = false;
+            // 2) Now expecting { "action":"CHOOSE_PLAYER","p":1 } or p:2
+            Object attach = conn.getAttachment();
+            if ("authed".equals(attach)) {
+                JsonObject obj = JsonParser.parseString(message).getAsJsonObject();
+                if (obj.has("action") && "CHOOSE_PLAYER".equals(obj.get("action").getAsString())) {
+                    int p = obj.get("p").getAsInt(); // must be 1 or 2
+                    if (p == 1) {
+                        player1WS = true;
+                        conn.setAttachment(1);
+                        System.out.println("WebSocket assigned to Player 1");
+                    } else if (p == 2) {
+                        player2WS = true;
+                        conn.setAttachment(2);
+                        System.out.println("WebSocket assigned to Player 2");
+                    } else {
+                        System.out.println("WebSocket bad player number: " + p);
+                        conn.close();
                     }
                 }
-            } catch (Exception ex) {
-                ex.printStackTrace();
+                return;
+            }
+
+            // 3) Handle MOVE or CONTROL for a known player
+            int wsP = (Integer) conn.getAttachment();
+            JsonObject obj = JsonParser.parseString(message).getAsJsonObject();
+            String t = obj.get("type").getAsString();
+
+            if ("MOVE".equals(t)) {
+                int dir = obj.get("dir").getAsInt();
+                if (wsP == 1) cmd1.set(new PlayerCommand(dir));
+                else         cmd2.set(new PlayerCommand(dir));
+            }
+            else if ("CONTROL".equals(t)) {
+                String action = obj.get("action").getAsString();
+                ControlCommand cc = new ControlCommand(ControlCommand.Type.valueOf(action));
+                if (wsP == 1) {
+                    switch (cc.type) {
+                        case READY:
+                            state.ready1 = true;
+                            System.out.println("Player 1 is ready.");
+                            break;
+                        case PAUSE:
+                            state.paused = true;
+                            System.out.println("Game paused by Player 1.");
+                            break;
+                        case RESUME:
+                            state.paused = false;
+                            System.out.println("Game resumed by Player 1.");
+                            break;
+                        case RESTART:
+                            state.ready1 = false;
+                            System.out.println("Player 1 requested restart.");
+                            break;
+                    }
+                } else {
+                    switch (cc.type) {
+                        case READY:
+                            state.ready2 = true;
+                            System.out.println("Player 2 is ready.");
+                            break;
+                        case PAUSE:
+                            state.paused = true;
+                            System.out.println("Game paused by Player 2.");
+                            break;
+                        case RESUME:
+                            state.paused = false;
+                            System.out.println("Game resumed by Player 2.");
+                            break;
+                        case RESTART:
+                            state.ready2 = false;
+                            System.out.println("Player 2 requested restart.");
+                            break;
+                    }
+                }
             }
         }
 
-        /** Broadcast the current GameState to all authenticated WS clients in JSON form. */
+        /**
+         * Broadcast the full GameState (including ready1/ready2) as JSON to every WebSocket client
+         * that has already chosen a slot (attachment is Integer).
+         */
         public void broadcastGameState(GameState gs) {
-            // Convert GameState → JSON
             String json = String.format(
-                "{\"type\":\"STATE\",\"p1Y\":%d,\"p2Y\":%d,\"ballX\":%d,\"ballY\":%d,\"score1\":%d,\"score2\":%d,\"paused\":%b,\"winner\":%d}",
-                gs.paddle1Y, gs.paddle2Y, gs.ballX, gs.ballY, gs.score1, gs.score2, gs.paused, gs.winner
+              "{"
+            +   "\"type\":\"STATE\","                    // message type
+            +   "\"p1Y\":%d,\"p2Y\":%d,"                  // paddle positions
+            +   "\"ballX\":%d,\"ballY\":%d,"              // ball
+            +   "\"score1\":%d,\"score2\":%d,"              // scores
+            +   "\"paused\":%b,\"winner\":%d,"             // paused + winner
+            +   "\"ready1\":%b,\"ready2\":%b"               // ready flags
+            +   "}",
+              gs.paddle1Y,
+              gs.paddle2Y,
+              gs.ballX,
+              gs.ballY,
+              gs.score1,
+              gs.score2,
+              gs.paused,
+              gs.winner,
+              gs.ready1,
+              gs.ready2
             );
-            synchronized(wsClients) {
-                for (WebSocket ws : wsClients) {
-                    if (ws.isOpen() && "authed".equals(ws.getAttachment())) {
-                        ws.send(json);
+            synchronized (wsClients) {
+                for (WebSocket w : wsClients) {
+                    Object attach = w.getAttachment();
+                    if (w.isOpen() && attach instanceof Integer) {
+                        w.send(json);
                     }
                 }
             }
         }
 
-        @Override public void onError(WebSocket conn, Exception ex) { ex.printStackTrace(); }
-        @Override public void onStart() { System.out.println("WS server started."); }
+        @Override
+        public void onError(WebSocket conn, Exception ex) {
+            ex.printStackTrace();
+        }
+
+        @Override
+        public void onStart() {
+            System.out.println("WebSocket server started.");
+        }
     }
 }
