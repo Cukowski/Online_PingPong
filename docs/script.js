@@ -140,12 +140,20 @@ BTN_READY.addEventListener('click', () => {
 });
 BTN_PAUSE.addEventListener('click', () => {
   if (!gameState) return;
-  if (!gameState.paused) sendControl('PAUSE');
-  else                  sendControl('RESUME');
+  if (!gameState.paused) {
+    sendControl('PAUSE');
+    // Change button label to “CONTINUE” or similar if you like:
+    BTN_PAUSE.textContent = 'CONTINUE';
+  } else {
+    sendControl('RESUME');
+    BTN_PAUSE.textContent = 'PAUSE';
+  }
 });
 BTN_RESTART.addEventListener('click', () => {
   sendControl('RESTART');
   BTN_READY.disabled = false;
+  // Make sure the pause button label resets:
+  BTN_PAUSE.textContent = 'PAUSE';
 });
 
 // ─── 9A) Keyboard Controls (Desktop) ───────────────────────────────────────────
@@ -168,6 +176,7 @@ let activeTouchId = null;
 
 canvas.addEventListener('touchstart', (e) => {
   if (!authenticated || !gameState) return;
+  // Prevent paddle movement if paused or not ready
   if (!gameState.ready1 || !gameState.ready2 || gameState.winner !== 0 || gameState.paused) return;
   e.preventDefault();
   const touch = e.changedTouches[0];
@@ -291,7 +300,7 @@ function gameLoop() {
   ctx.fillRect(0, p1y, pw, ph);
   ctx.fillRect(canvas.width - pw, p2y, pw, ph);
 
-  // (g) Draw ball (if not paused)
+  // (g) Draw ball (only if not paused)
   if (!gameState.paused) {
     const bx = gameState.ballX * xScale;
     const by = gameState.ballY * yScale;
@@ -305,6 +314,20 @@ function gameLoop() {
   ctx.textAlign = 'center';
   ctx.fillText(String(gameState.score1), canvas.width/2 - 50, 50);
   ctx.fillText(String(gameState.score2), canvas.width/2 + 50, 50);
+
+  // ─── If the game is paused, overlay the “PAUSE” text ─────────────────────────
+  if (gameState.paused) {
+    // translucent background
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // big “PAUSE” text
+    ctx.fillStyle = '#FFF';
+    ctx.font      = 'bold 60px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('PAUSE', canvas.width / 2, canvas.height / 2);
+  }
 
   requestAnimationFrame(gameLoop);
 }
