@@ -22,14 +22,12 @@ const BTN_RESTART = document.getElementById('restartBtn');
 
 // ─── 4) Resize Canvas to Preserve 4:3 Aspect Ratio ──────────────────────────────
 function resizeCanvas() {
-  // Determine available viewport dimensions
   const containerWidth = window.innerWidth;
   const containerHeight = window.innerHeight;
   const gameRatio = GAME_WIDTH / GAME_HEIGHT;
 
   let newWidth, newHeight;
 
-  // If the screen is “wider” (in ratio) than 4:3, constrain by height; otherwise, constrain by width
   if (containerWidth / containerHeight > gameRatio) {
     newHeight = containerHeight;
     newWidth  = newHeight * gameRatio;
@@ -38,14 +36,12 @@ function resizeCanvas() {
     newHeight = newWidth / gameRatio;
   }
 
-  // Apply these dimensions to the canvas’s style (CSS) and resolution (backing store)
   canvas.style.width  = `${Math.floor(newWidth)}px`;
   canvas.style.height = `${Math.floor(newHeight)}px`;
   canvas.width        = Math.floor(newWidth);
   canvas.height       = Math.floor(newHeight);
 }
 
-// Fire once on load, and again whenever the window size changes
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 

@@ -1,6 +1,6 @@
 /* styles.css */
 
-/* Always fill the screen with a dark stage to play on */
+/*— The stage is always black, from edge to edge—*/
 html, body {
   margin: 0;
   padding: 0;
@@ -11,7 +11,7 @@ html, body {
   font-family: Arial, sans-serif;
 }
 
-/* Container is full viewport and flex‐centers its contents */
+/*— The container spans the viewport, centering the canvas beneath the controls—*/
 #gameContainer {
   position: relative;
   width: 100vw;
@@ -21,22 +21,24 @@ html, body {
   justify-content: center;
 }
 
-/* Canvas will be sized by JS to preserve aspect ratio */
+/*— Canvas still sized by JS to preserve 4:3—*/
 #gameCanvas {
   background: #111;
   border: 2px solid #444;
-  touch-action: none; /* prevent default scrolling when touching canvas */
-  display: block;     /* so margins/auto centering behave predictably */
+  touch-action: none; /* we prevent scroll when touching the canvas */
+  display: block;
+  z-index: 1; /* ensure lower than controls */
 }
 
-/* Controls sit at the bottom, with touch‐friendly padding */
+/*— Controls: now fixed to the bottom of the viewport, always on top—*/
 #controls {
-  position: absolute;
+  position: fixed;
   bottom: 10px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
   gap: 8px;
+  z-index: 10; /* elevate above the canvas */
 }
 
 button {
@@ -48,6 +50,7 @@ button {
   border-radius: 6px;
   cursor: pointer;
   user-select: none;
+  touch-action: manipulation; /* signal that taps are for buttons */
 }
 
 button:disabled {
@@ -55,12 +58,12 @@ button:disabled {
   cursor: not-allowed;
 }
 
-/* Hide focus outlines on mobile for a cleaner look */
+/*— Remove focus outlines on mobile for a cleaner look—*/
 button:focus {
   outline: none;
 }
 
-/* On very narrow screens, shrink buttons and text slightly */
+/*— On very narrow screens, shrink the buttons and text slightly—*/
 @media (max-width: 400px) {
   button {
     padding: 8px 16px;
