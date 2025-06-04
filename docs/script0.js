@@ -1,26 +1,25 @@
 // File: script.js
 
-// ─── 1) Constants ───────────────────────────────────────────────────────────────
+// Constants matching server’s GAME_WIDTH, GAME_HEIGHT, etc.
 const GAME_WIDTH    = 800;
 const GAME_HEIGHT   = 600;
 const PADDLE_WIDTH  = 10;
 const PADDLE_HEIGHT = 80;
 const BALL_SIZE     = 15;
 
-// ─── 2) Global State ────────────────────────────────────────────────────────────
 let ws;
 let authenticated = false;
 let playerNumber  = null;
 let gameState     = null;
 
-// ─── 3) DOM References ─────────────────────────────────────────────────────────
+// Grab DOM elements
 const canvas      = document.getElementById('gameCanvas');
 const ctx         = canvas.getContext('2d');
 const BTN_READY   = document.getElementById('readyBtn');
 const BTN_PAUSE   = document.getElementById('pauseBtn');
 const BTN_RESTART = document.getElementById('restartBtn');
 
-// ─── 4) Resize Canvas on Window Resize ──────────────────────────────────────────
+// Resize canvas whenever window resizes
 function resizeCanvas() {
   canvas.width  = canvas.clientWidth;
   canvas.height = canvas.clientHeight;
@@ -28,75 +27,61 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
-// ─── 5) WebSocket Connection Logic ─────────────────────────────────────────────
+// 1) Prompt for server IP/hostname and WebSocket port, then connect
 function connectWebSocket() {
-  console.log('connectWebSocket() called');
   const host = prompt('Enter server hostname or IP:', '');
   if (!host) {
     alert('Server hostname/IP is required.');
-    console.warn('No host entered, aborting connectWebSocket()');
     return;
   }
 
   let port = prompt('Enter WebSocket port (default: 8080):', '8080');
   if (!port) port = '8080';
 
-  // Choose ws:// versus wss:// based on page protocol
+  // Use wss:// if the page is loaded over HTTPS, otherwise ws://
   const protocol = (window.location.protocol === 'https:') ? 'wss://' : 'ws://';
   const wsUrl = `${protocol}${host}:${port}`;
-  console.log(`Attempting to open WebSocket to ${wsUrl}`);
-
-  try {
-    ws = new WebSocket(wsUrl);
-  } catch (err) {
-    console.error('WebSocket constructor threw:', err);
-    alert('Failed to create WebSocket. See console for details.');
-    return;
-  }
+  console.log(`→ Opening WebSocket to ${wsUrl}`);
+  ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
-    console.log(`WebSocket opened to ${wsUrl}. Waiting for server prompt...`);
+    console.log(`WebSocket opened to ${wsUrl}, waiting for server prompt...`);
   };
 
   ws.onmessage = (evt) => {
     const msg = evt.data.trim();
-    console.log('Received WebSocket message:', msg);
 
-    // Phase 1: authentication handshake
+    // Phase 1: Authentication handshake
     if (!authenticated) {
       if (msg === 'ENTER_SECRET') {
         const secret = prompt('Enter shared secret:');
-        if (secret !== null) {
-          ws.send(secret);
-          console.log('Sent secret to server');
-        }
+        ws.send(secret); // no trailing newline
       }
       else if (msg === 'OK') {
-        console.log('Server replied OK. Marking authenticated = true');
         authenticated = true;
         choosePlayerNumber();
       }
       else if (msg === 'FAIL') {
         alert('Wrong secret—connection closed by server.');
-        console.warn('Server replied FAIL. Closing WebSocket.');
         ws.close();
       }
       return;
     }
 
-    // Phase 2: after authentication, parse JSON state
+    // Phase 2: Already authenticated => treat incoming as JSON "STATE"
     try {
       const obj = JSON.parse(msg);
       if (obj.type === 'STATE') {
+        // Store the full gameState (including ready1/ready2)
         gameState = obj;
       }
     } catch (e) {
-      console.warn('WebSocket message was not JSON:', msg);
+      console.warn('Invalid JSON from server:', msg);
     }
   };
 
   ws.onclose = () => {
-    console.warn('WebSocket connection closed. Will retry in 2 seconds.');
+    console.log('WebSocket closed; will reconnect in 2s...');
     authenticated  = false;
     playerNumber   = null;
     gameState      = null;
@@ -104,46 +89,45 @@ function connectWebSocket() {
   };
 
   ws.onerror = (err) => {
-    console.error('WebSocket encountered error:', err);
+    console.error('WebSocket error:', err);
   };
 }
 
-// ─── 6) After “OK”, Pick Player Slot ──────────────────────────────────────────
+// 2) After secret OK, prompt for player number (1 or 2) and send { action:"CHOOSE_PLAYER", p:… }
 function choosePlayerNumber() {
   while (true) {
     const pNumStr = prompt('Enter player number (1 or 2):', '1');
     const pNum = parseInt(pNumStr, 10);
     if (pNum === 1 || pNum === 2) {
       playerNumber = pNum;
+      // Immediately tell the server which slot we want:
       ws.send(JSON.stringify({ action: 'CHOOSE_PLAYER', p: playerNumber }));
-      console.log(`Sent CHOOSE_PLAYER => ${playerNumber}`);
       break;
     }
     alert('Please enter either 1 or 2.');
   }
 }
 
-// ─── 7) Sending MOVE & CONTROL Commands ────────────────────────────────────────
+// 3) Send a MOVE command over WebSocket: { type:"MOVE", dir:-1/0/1 }
 function sendMove(dir) {
   if (ws && authenticated && playerNumber) {
     const payload = JSON.stringify({ type: 'MOVE', dir });
     ws.send(payload);
-    // console.log('Sent MOVE:', dir);
   }
 }
 
+// 4) Send a CONTROL command over WebSocket: { type:"CONTROL", action:"READY"/"PAUSE"/"RESUME"/"RESTART" }
 function sendControl(action) {
   if (ws && authenticated && playerNumber) {
     const payload = JSON.stringify({ type: 'CONTROL', action });
     ws.send(payload);
-    console.log('Sent CONTROL:', action);
   }
 }
 
-// ─── 8) Button Event Listeners ─────────────────────────────────────────────────
+// Hook up the three buttons:
 BTN_READY.addEventListener('click', () => {
   sendControl('READY');
-  BTN_READY.disabled = true;
+  BTN_READY.disabled = true; // disable until next match
 });
 BTN_PAUSE.addEventListener('click', () => {
   if (!gameState) return;
@@ -155,9 +139,10 @@ BTN_RESTART.addEventListener('click', () => {
   BTN_READY.disabled = false;
 });
 
-// ─── 9A) Keyboard Controls (Desktop) ───────────────────────────────────────────
+// Keyboard controls for paddle (W/S or Up/Down)
 window.addEventListener('keydown', (e) => {
   if (!authenticated || !gameState) return;
+  // Only allow movement once both players are ready and game is not over
   if (!gameState.ready1 || !gameState.ready2 || gameState.winner !== 0 || gameState.paused) return;
   let dir = 0;
   if (e.key === 'ArrowUp' || e.key.toLowerCase() === 'w') dir = -1;
@@ -170,69 +155,11 @@ window.addEventListener('keyup', (e) => {
   if (relevant.includes(e.key)) sendMove(0);
 });
 
-// ─── 9B) Touch Controls (Mobile) ───────────────────────────────────────────────
-let activeTouchId = null;
-
-canvas.addEventListener('touchstart', (e) => {
-  if (!authenticated || !gameState) return;
-  if (!gameState.ready1 || !gameState.ready2 || gameState.winner !== 0 || gameState.paused) return;
-  e.preventDefault();
-  const touch = e.changedTouches[0];
-  activeTouchId = touch.identifier;
-  handleTouchMove(touch);
-}, { passive: false });
-
-canvas.addEventListener('touchmove', (e) => {
-  if (activeTouchId === null || !authenticated || !gameState) return;
-  for (let t of e.changedTouches) {
-    if (t.identifier === activeTouchId) {
-      e.preventDefault();
-      handleTouchMove(t);
-      return;
-    }
-  }
-}, { passive: false });
-
-canvas.addEventListener('touchend', (e) => {
-  if (activeTouchId === null) return;
-  for (let t of e.changedTouches) {
-    if (t.identifier === activeTouchId) {
-      e.preventDefault();
-      activeTouchId = null;
-      sendMove(0);
-      return;
-    }
-  }
-}, { passive: false });
-
-canvas.addEventListener('touchcancel', (e) => {
-  if (activeTouchId === null) return;
-  for (let t of e.changedTouches) {
-    if (t.identifier === activeTouchId) {
-      e.preventDefault();
-      activeTouchId = null;
-      sendMove(0);
-      return;
-    }
-  }
-}, { passive: false });
-
-function handleTouchMove(touch) {
-  const rect = canvas.getBoundingClientRect();
-  const y = touch.clientY - rect.top;
-  const mid = rect.height / 2;
-  let dir = 0;
-  if (y < mid - 20) dir = -1;
-  else if (y > mid + 20) dir = 1;
-  else dir = 0;
-  sendMove(dir);
-}
-
-// ─── 10) Main Render Loop (~60 FPS) ─────────────────────────────────────────────
+// 5) Main render loop (~60 FPS)
 function gameLoop() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  // (a) Not yet received any state
+  // If we have not yet received any gameState => show "Connecting..."
   if (!gameState) {
     ctx.fillStyle = '#FFF';
     ctx.font      = '30px Arial';
@@ -242,7 +169,7 @@ function gameLoop() {
     return;
   }
 
-  // (b) Not both ready
+  // If either player is not yet ready => show waiting message
   if (!gameState.ready1 || !gameState.ready2) {
     ctx.fillStyle = '#FFF';
     ctx.font      = '30px Arial';
@@ -256,7 +183,7 @@ function gameLoop() {
     return;
   }
 
-  // (c) Game over
+  // If game over => show overlay
   if (gameState.winner !== 0) {
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -276,7 +203,7 @@ function gameLoop() {
     return;
   }
 
-  // (d) Draw center dashed line
+  // Draw dashed center line
   ctx.strokeStyle = '#555';
   ctx.setLineDash([10, 10]);
   ctx.beginPath();
@@ -285,11 +212,11 @@ function gameLoop() {
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // (e) Scale factors
+  // Scale factors (server’s logical size is 800×600)
   const xScale = canvas.width  / GAME_WIDTH;
   const yScale = canvas.height / GAME_HEIGHT;
 
-  // (f) Draw paddles
+  // Draw paddles
   ctx.fillStyle = '#FFF';
   const p1y = gameState.p1Y * yScale;
   const p2y = gameState.p2Y * yScale;
@@ -298,7 +225,7 @@ function gameLoop() {
   ctx.fillRect(0, p1y, pw, ph);
   ctx.fillRect(canvas.width - pw, p2y, pw, ph);
 
-  // (g) Draw ball (if not paused)
+  // Draw ball (unless paused)
   if (!gameState.paused) {
     const bx = gameState.ballX * xScale;
     const by = gameState.ballY * yScale;
@@ -306,7 +233,7 @@ function gameLoop() {
     ctx.fillRect(bx, by, bs, bs);
   }
 
-  // (h) Draw scores
+  // Draw scores
   ctx.fillStyle = '#FFF';
   ctx.font      = '32px Arial';
   ctx.textAlign = 'center';
@@ -316,6 +243,5 @@ function gameLoop() {
   requestAnimationFrame(gameLoop);
 }
 
-// ─── 11) Start Everything ───────────────────────────────────────────────────────
 requestAnimationFrame(gameLoop);
 connectWebSocket();
