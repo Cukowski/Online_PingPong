@@ -1,6 +1,6 @@
 /* styles.css */
 
-/* Always fill the screen */
+/* Always fill the screen with a dark stage to play on */
 html, body {
   margin: 0;
   padding: 0;
@@ -21,16 +21,15 @@ html, body {
   justify-content: center;
 }
 
-/* Canvas uses 100% of container */
+/* Canvas will be sized by JS to preserve aspect ratio */
 #gameCanvas {
   background: #111;
   border: 2px solid #444;
-  width: 100%;
-  height: 100%;
   touch-action: none; /* prevent default scrolling when touching canvas */
+  display: block;     /* so margins/auto centering behave predictably */
 }
 
-/* Always place controls at bottom and enlarge for touch */
+/* Controls sit at the bottom, with touch‐friendly padding */
 #controls {
   position: absolute;
   bottom: 10px;
@@ -56,7 +55,15 @@ button:disabled {
   cursor: not-allowed;
 }
 
-/* Hide focus outlines on mobile for cleaner look */
+/* Hide focus outlines on mobile for a cleaner look */
 button:focus {
   outline: none;
+}
+
+/* On very narrow screens, shrink buttons and text slightly */
+@media (max-width: 400px) {
+  button {
+    padding: 8px 16px;
+    font-size: 16px;
+  }
 }

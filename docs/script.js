@@ -20,37 +20,42 @@ const BTN_READY   = document.getElementById('readyBtn');
 const BTN_PAUSE   = document.getElementById('pauseBtn');
 const BTN_RESTART = document.getElementById('restartBtn');
 
-// ─── 4) Resize Canvas on Window Resize ──────────────────────────────────────────
+// ─── 4) Resize Canvas to Preserve 4:3 Aspect Ratio ──────────────────────────────
 function resizeCanvas() {
-  canvas.width  = canvas.clientWidth;
-  canvas.height = canvas.clientHeight;
+  // Determine available viewport dimensions
+  const containerWidth = window.innerWidth;
+  const containerHeight = window.innerHeight;
+  const gameRatio = GAME_WIDTH / GAME_HEIGHT;
+
+  let newWidth, newHeight;
+
+  // If the screen is “wider” (in ratio) than 4:3, constrain by height; otherwise, constrain by width
+  if (containerWidth / containerHeight > gameRatio) {
+    newHeight = containerHeight;
+    newWidth  = newHeight * gameRatio;
+  } else {
+    newWidth  = containerWidth;
+    newHeight = newWidth / gameRatio;
+  }
+
+  // Apply these dimensions to the canvas’s style (CSS) and resolution (backing store)
+  canvas.style.width  = `${Math.floor(newWidth)}px`;
+  canvas.style.height = `${Math.floor(newHeight)}px`;
+  canvas.width        = Math.floor(newWidth);
+  canvas.height       = Math.floor(newHeight);
 }
+
+// Fire once on load, and again whenever the window size changes
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
 // ─── 5) WebSocket Connection Logic ─────────────────────────────────────────────
 function connectWebSocket() {
-  // let wsUrl;
-  // if (window.location.hostname.endsWith('github.io') ||
-  //     window.location.hostname === 'pong-online.site') {
-  //   // On GitHub Pages (HTTPS) or your domain directly → use WSS
-  //   wsUrl = 'wss://pong-online.site/ws/';
-  // } else {
-  //   // Local testing over HTTP → prompt for host/port
-  //   const host = prompt('Enter server hostname or IP:', '');
-  //   let port = prompt('Enter WebSocket port (default: 8080):', '8080');
-  //   if (!port) port = '8080';
-  //   wsUrl = `ws://${host}:${port}`;
-  // }
-
-  // console.log('Opening WebSocket to', wsUrl);
-
-  // ws = new WebSocket(wsUrl);
   console.log('Opening WebSocket to wss://pong-online.site/ws/');
   ws = new WebSocket("wss://pong-online.site/ws/");
 
   ws.onopen = () => {
-    console.log(`WebSocket opened to ${wsUrl}. Waiting for server prompt...`);
+    console.log(`WebSocket opened. Waiting for server prompt...`);
   };
 
   ws.onmessage = (evt) => {
@@ -65,13 +70,11 @@ function connectWebSocket() {
           ws.send(secret);
           console.log('Sent secret to server');
         }
-      }
-      else if (msg === 'OK') {
+      } else if (msg === 'OK') {
         console.log('Server replied OK. Marking authenticated = true');
         authenticated = true;
         choosePlayerNumber();
-      }
-      else if (msg === 'FAIL') {
+      } else if (msg === 'FAIL') {
         alert('Wrong secret—connection closed by server.');
         console.warn('Server replied FAIL. Closing WebSocket.');
         ws.close();
@@ -123,7 +126,6 @@ function sendMove(dir) {
   if (ws && authenticated && playerNumber) {
     const payload = JSON.stringify({ type: 'MOVE', dir });
     ws.send(payload);
-    // console.log('Sent MOVE:', dir);
   }
 }
 
@@ -155,7 +157,7 @@ window.addEventListener('keydown', (e) => {
   if (!authenticated || !gameState) return;
   if (!gameState.ready1 || !gameState.ready2 || gameState.winner !== 0 || gameState.paused) return;
   let dir = 0;
-  if (e.key === 'ArrowUp' || e.key.toLowerCase() === 'w') dir = -1;
+  if (e.key === 'ArrowUp' || e.key.toLowerCase() === 'w')   dir = -1;
   if (e.key === 'ArrowDown' || e.key.toLowerCase() === 's') dir = 1;
   if (dir !== 0) sendMove(dir);
 });
@@ -217,9 +219,9 @@ function handleTouchMove(touch) {
   const y = touch.clientY - rect.top;
   const mid = rect.height / 2;
   let dir = 0;
-  if (y < mid - 20) dir = -1;
+  if (y < mid - 20)      dir = -1;
   else if (y > mid + 20) dir = 1;
-  else dir = 0;
+  else                   dir = 0;
   sendMove(dir);
 }
 
