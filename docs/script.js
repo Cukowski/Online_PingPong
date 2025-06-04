@@ -19,12 +19,13 @@ const ctx         = canvas.getContext('2d');
 const BTN_READY   = document.getElementById('readyBtn');
 const BTN_PAUSE   = document.getElementById('pauseBtn');
 const BTN_RESTART = document.getElementById('restartBtn');
+const INFO_DIV    = document.getElementById('playerInfo');  // <--- our new info box
 
 // ─── 4) Resize Canvas to Preserve 4:3 Aspect Ratio ──────────────────────────────
 function resizeCanvas() {
-  const containerWidth = window.innerWidth;
+  const containerWidth  = window.innerWidth;
   const containerHeight = window.innerHeight;
-  const gameRatio = GAME_WIDTH / GAME_HEIGHT;
+  const gameRatio       = GAME_WIDTH / GAME_HEIGHT;
 
   let newWidth, newHeight;
 
@@ -94,6 +95,8 @@ function connectWebSocket() {
     authenticated  = false;
     playerNumber   = null;
     gameState      = null;
+    // Clear the player info, since we must re-authenticate
+    INFO_DIV.textContent = '';
     setTimeout(connectWebSocket, 2000);
   };
 
@@ -106,11 +109,15 @@ function connectWebSocket() {
 function choosePlayerNumber() {
   while (true) {
     const pNumStr = prompt('Enter player number (1 or 2):', '1');
-    const pNum = parseInt(pNumStr, 10);
+    const pNum    = parseInt(pNumStr, 10);
     if (pNum === 1 || pNum === 2) {
       playerNumber = pNum;
       ws.send(JSON.stringify({ action: 'CHOOSE_PLAYER', p: playerNumber }));
       console.log(`Sent CHOOSE_PLAYER => ${playerNumber}`);
+
+      // Update our info box right away:
+      INFO_DIV.textContent = `You are Player ${playerNumber}`;
+
       break;
     }
     alert('Please enter either 1 or 2.');
@@ -138,21 +145,21 @@ BTN_READY.addEventListener('click', () => {
   sendControl('READY');
   BTN_READY.disabled = true;
 });
+
 BTN_PAUSE.addEventListener('click', () => {
   if (!gameState) return;
   if (!gameState.paused) {
     sendControl('PAUSE');
-    // Change button label to “CONTINUE” or similar if you like:
     BTN_PAUSE.textContent = 'CONTINUE';
   } else {
     sendControl('RESUME');
     BTN_PAUSE.textContent = 'PAUSE';
   }
 });
+
 BTN_RESTART.addEventListener('click', () => {
   sendControl('RESTART');
   BTN_READY.disabled = false;
-  // Make sure the pause button label resets:
   BTN_PAUSE.textContent = 'PAUSE';
 });
 
@@ -165,6 +172,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowDown' || e.key.toLowerCase() === 's') dir = 1;
   if (dir !== 0) sendMove(dir);
 });
+
 window.addEventListener('keyup', (e) => {
   if (!authenticated || !gameState) return;
   const relevant = ['ArrowUp','ArrowDown','w','W','s','S'];
@@ -176,7 +184,6 @@ let activeTouchId = null;
 
 canvas.addEventListener('touchstart', (e) => {
   if (!authenticated || !gameState) return;
-  // Prevent paddle movement if paused or not ready
   if (!gameState.ready1 || !gameState.ready2 || gameState.winner !== 0 || gameState.paused) return;
   e.preventDefault();
   const touch = e.changedTouches[0];
@@ -221,8 +228,8 @@ canvas.addEventListener('touchcancel', (e) => {
 
 function handleTouchMove(touch) {
   const rect = canvas.getBoundingClientRect();
-  const y = touch.clientY - rect.top;
-  const mid = rect.height / 2;
+  const y    = touch.clientY - rect.top;
+  const mid  = rect.height / 2;
   let dir = 0;
   if (y < mid - 20)      dir = -1;
   else if (y > mid + 20) dir = 1;
@@ -315,7 +322,7 @@ function gameLoop() {
   ctx.fillText(String(gameState.score1), canvas.width/2 - 50, 50);
   ctx.fillText(String(gameState.score2), canvas.width/2 + 50, 50);
 
-  // ─── If the game is paused, overlay the “PAUSE” text ─────────────────────────
+  // (i) If paused, overlay “PAUSE”
   if (gameState.paused) {
     // translucent background
     ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';

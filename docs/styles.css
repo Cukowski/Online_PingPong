@@ -1,6 +1,6 @@
 /* styles.css */
 
-/*— The stage is always black, from edge to edge—*/
+/*— The stage is always black, from edge to edge —*/
 html, body {
   margin: 0;
   padding: 0;
@@ -11,7 +11,7 @@ html, body {
   font-family: Arial, sans-serif;
 }
 
-/*— The container spans the viewport, centering the canvas beneath the controls—*/
+/*— The container spans the viewport, centering the canvas beneath the controls —*/
 #gameContainer {
   position: relative;
   width: 100vw;
@@ -21,16 +21,16 @@ html, body {
   justify-content: center;
 }
 
-/*— Canvas still sized by JS to preserve 4:3—*/
+/*— Canvas still sized by JS to preserve 4:3 —*/
 #gameCanvas {
   background: #111;
   border: 2px solid #444;
-  touch-action: none; /* we prevent scroll when touching the canvas */
+  touch-action: none; /* prevent default scrolling on touch */
   display: block;
-  z-index: 1; /* ensure lower than controls */
+  z-index: 1; /* behind controls and info */
 }
 
-/*— Controls: now fixed to the bottom of the viewport, always on top—*/
+/*— Controls stick to the bottom, always on top —*/
 #controls {
   position: fixed;
   bottom: 10px;
@@ -38,7 +38,7 @@ html, body {
   transform: translateX(-50%);
   display: flex;
   gap: 8px;
-  z-index: 10; /* elevate above the canvas */
+  z-index: 10;
 }
 
 button {
@@ -50,7 +50,7 @@ button {
   border-radius: 6px;
   cursor: pointer;
   user-select: none;
-  touch-action: manipulation; /* signal that taps are for buttons */
+  touch-action: manipulation;
 }
 
 button:disabled {
@@ -58,15 +58,31 @@ button:disabled {
   cursor: not-allowed;
 }
 
-/*— Remove focus outlines on mobile for a cleaner look—*/
 button:focus {
   outline: none;
 }
 
-/*— On very narrow screens, shrink the buttons and text slightly—*/
+/*— Our new “Player Info” box —*/
+#playerInfo {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 16px;
+  z-index: 10;
+}
+
+/*— On very narrow screens, shrink buttons and info text slightly —*/
 @media (max-width: 400px) {
   button {
     padding: 8px 16px;
     font-size: 16px;
+  }
+  #playerInfo {
+    font-size: 14px;
+    padding: 6px 10px;
   }
 }
