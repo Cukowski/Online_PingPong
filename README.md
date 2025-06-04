@@ -7,6 +7,7 @@ This project implements a networked Pong game playable:
 * **On desktop (Java Swing client)** over plain TCP (port 12345).
 * **In any modern browser or mobile device** via a web‐based client (HTML/CSS/JS) over secure WebSockets (WSS, port 443).
   Both clients connect to the same Java‐based server (`PongServer`), which manages game state, score, and control messages.
+* Web Client: [Game Page](https://cukowski.github.io/Online_PingPong/)
 
 ## Features
 
